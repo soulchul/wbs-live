@@ -171,8 +171,8 @@ async function refresh(){
     document.getElementById('monthLimit').textContent=`한도 ${fmt(h.monthly_limit)} · ${Number(h.month_pct||0).toFixed(2)}%`;
     document.getElementById('rpcRate').textContent=Number(h.rpc_per_min||0).toFixed(1)+'/분';
     document.getElementById('rpcLatency').textContent=`평균 ${fmt(h.avg_rpc_ms)}ms · 총 ${fmt(h.session_rpc_attempts)}회`;
-    document.getElementById('apiErrors').textContent=`${fmt(h.session_rpc_errors)} / ${fmt(h.rate_limits)}`;
-    document.getElementById('lastError').textContent=h.last_error_age_sec==null?'오류 없음':'마지막 오류 '+ago(h.last_error_age_sec);
+    document.getElementById('apiErrors').textContent=`${fmt((h.session_rpc_errors||0)+(h.ws_connect_errors||0))} / ${fmt((h.rate_limits||0)+(h.ws_rate_limits||0))}`;
+    document.getElementById('lastError').textContent=h.last_error_age_sec==null?'오류 없음':`마지막 오류 ${ago(h.last_error_age_sec)} · 재연결 ${fmt(h.reconnects)}`;
     const pct=Math.min(Number(h.month_pct||0),100);
     document.getElementById('usagePct').textContent=Number(h.month_pct||0).toFixed(3)+'%';
     document.getElementById('usageBar').style.width=pct+'%';
@@ -304,6 +304,11 @@ class UsageMeter:
         self.session[f"ws_{kind}"]+=1
         self.last_ws_at=now()
 
+    def ws_error(self,rate_limited=False):
+        self.session["ws_connect_errors"]+=1
+        if rate_limited:self.session["ws_rate_limits"]+=1
+        self.last_error_at=now()
+
     def save(self):
         self._roll()
         try:
@@ -331,6 +336,8 @@ class UsageMeter:
             "session_rpc_success":self.session["rpc_success"],
             "session_rpc_errors":self.session["rpc_errors"],
             "rate_limits":self.session["rate_limits"],
+            "ws_connect_errors":self.session["ws_connect_errors"],
+            "ws_rate_limits":self.session["ws_rate_limits"],
             "rpc_per_min":round(attempts*60/elapsed,2),
             "avg_rpc_ms":round(avg,1),
             "last_rpc_age_sec":now()-self.last_rpc_at if self.last_rpc_at else None,
@@ -913,8 +920,9 @@ class Engine:
                     self.ws_connected=False
                     self.ws=None
                     USAGE.inc("reconnects")
-                    USAGE.save()
                     status=getattr(e,"status",None)
+                    USAGE.ws_error(rate_limited=status==429)
+                    USAGE.save()
                     print("[RECONNECT]",type(e).__name__,f"status={status}" if status else "",flush=True)
                     self.push("RECONNECT",f"{type(e).__name__} · {reconnect_delay}초 후 재시도")
                     await asyncio.sleep(reconnect_delay)
