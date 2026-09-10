@@ -856,46 +856,69 @@ class Engine:
         print(f"Starting paper equity: {self.eq:,.0f} KRW",flush=True)
 
         runner=await self.dashboard()
+        reconnect_delay=5
+        background_started=False
         try:
-            # Critical startup order:
-            # connect live WebSocket FIRST, subscribe immediately,
-            # then do slow bootstrap in background.
-            async with self.s.ws_connect(WSS,heartbeat=20,autoping=True) as ws:
-                self.ws=ws
-                self.ws_connected=True
-                self.last_loop_activity=now()
-                print("[LIVE] websocket connected - real-time detection started",flush=True)
-                self.push("LIVE","실시간 탐지 시작")
+            while True:
+                try:
+                    # Dashboard stays online while the Helius socket reconnects.
+                    self.pending_sub.clear()
+                    self.sub.clear()
+                    for values in self.subbed.values():values.clear()
 
-                for w in sorted(self.sensor):
-                    await self.subscribe("wallet",w)
-                    await asyncio.sleep(.05)
-
-                for name,p in PROGRAMS.items():
-                    await self.subscribe("program",p,name)
-
-                print("[LIVE] seed + Pump.fun + PumpSwap subscriptions requested",flush=True)
-                asyncio.create_task(self.heartbeat())
-                asyncio.create_task(self.bootstrap())
-
-                async for msg in ws:
-                    if msg.type!=aiohttp.WSMsgType.TEXT:
-                        continue
-
-                    d=json.loads(msg.data)
-                    if await self.ack(d):
-                        continue
-
-                    pa=d.get("params") or {}
-                    sid=pa.get("subscription")
-                    val=(pa.get("result") or {}).get("value") or {}
-                    sig=val.get("signature")
-                    target=self.sub.get(sid)
-
-                    if sig and target:
-                        USAGE.ws(target[0])
+                    async with self.s.ws_connect(WSS,heartbeat=20,autoping=True) as ws:
+                        self.ws=ws
+                        self.ws_connected=True
                         self.last_loop_activity=now()
-                        self.schedule_handle(sig,target[0],target[1])
+                        reconnect_delay=5
+                        print("[LIVE] websocket connected - real-time detection started",flush=True)
+                        self.push("LIVE","실시간 탐지 시작")
+
+                        for w in sorted(self.sensor):
+                            await self.subscribe("wallet",w)
+                            await asyncio.sleep(.05)
+
+                        for name,p in PROGRAMS.items():
+                            await self.subscribe("program",p,name)
+
+                        print("[LIVE] seed + Pump.fun + PumpSwap subscriptions requested",flush=True)
+                        if not background_started:
+                            asyncio.create_task(self.heartbeat())
+                            asyncio.create_task(self.bootstrap())
+                            background_started=True
+
+                        async for msg in ws:
+                            if msg.type!=aiohttp.WSMsgType.TEXT:
+                                continue
+
+                            d=json.loads(msg.data)
+                            if await self.ack(d):
+                                continue
+
+                            pa=d.get("params") or {}
+                            sid=pa.get("subscription")
+                            val=(pa.get("result") or {}).get("value") or {}
+                            sig=val.get("signature")
+                            target=self.sub.get(sid)
+
+                            if sig and target:
+                                USAGE.ws(target[0])
+                                self.last_loop_activity=now()
+                                self.schedule_handle(sig,target[0],target[1])
+
+                        raise ConnectionError("websocket closed")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.ws_connected=False
+                    self.ws=None
+                    USAGE.inc("reconnects")
+                    USAGE.save()
+                    status=getattr(e,"status",None)
+                    print("[RECONNECT]",type(e).__name__,f"status={status}" if status else "",flush=True)
+                    self.push("RECONNECT",f"{type(e).__name__} · {reconnect_delay}초 후 재시도")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay=min(reconnect_delay*2,60)
         finally:
             self.ws_connected=False
             self.ws=None
@@ -905,18 +928,7 @@ async def main():
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=45)
     ) as s:
-        reconnect_delay=5
-        while True:
-            try:
-                await Engine(s).run()
-                reconnect_delay=5
-            except Exception as e:
-                USAGE.inc("reconnects")
-                USAGE.save()
-                status=getattr(e,"status",None)
-                print("[RECONNECT]",type(e).__name__,f"status={status}" if status else "",flush=True)
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay=min(reconnect_delay*2,60)
+        await Engine(s).run()
 
 if __name__=="__main__":
     asyncio.run(main())
