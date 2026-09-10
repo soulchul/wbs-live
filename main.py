@@ -29,7 +29,7 @@ MAX_DYNAMIC=int(os.getenv("WBS_MAX_DYNAMIC_SENSORS","100"))
 PROGRAM_SAMPLE=float(os.getenv("WBS_DISCOVERY_SAMPLE_SEC","12"))
 HEARTBEAT=int(os.getenv("WBS_HEARTBEAT_SEC","60"))
 HELIUS_MONTHLY_LIMIT=int(os.getenv("HELIUS_MONTHLY_CREDIT_LIMIT","1000000"))
-HELIUS_RPC_RPS=float(os.getenv("HELIUS_RPC_RPS","8"))
+HELIUS_RPC_RPS=float(os.getenv("HELIUS_RPC_RPS","0.3"))
 MAX_INFLIGHT_HANDLES=int(os.getenv("WBS_MAX_INFLIGHT_HANDLES","24"))
 
 PROGRAMS={
@@ -170,7 +170,7 @@ async function refresh(){
     document.getElementById('todayCredits').textContent=fmt(h.today_credits_est);
     document.getElementById('monthLimit').textContent=`한도 ${fmt(h.monthly_limit)} · ${Number(h.month_pct||0).toFixed(2)}%`;
     document.getElementById('rpcRate').textContent=Number(h.rpc_per_min||0).toFixed(1)+'/분';
-    document.getElementById('rpcLatency').textContent=`평균 ${fmt(h.avg_rpc_ms)}ms · 총 ${fmt(h.session_rpc_attempts)}회`;
+    document.getElementById('rpcLatency').textContent=`상한 ${h.rpc_rps_cap}/초 · 이론 월 ${fmt(h.monthly_cap_est)} · 평균 ${fmt(h.avg_rpc_ms)}ms`;
     document.getElementById('apiErrors').textContent=`${fmt((h.session_rpc_errors||0)+(h.ws_connect_errors||0))} / ${fmt((h.rate_limits||0)+(h.ws_rate_limits||0))}`;
     document.getElementById('lastError').textContent=h.last_error_age_sec==null?'오류 없음':`마지막 오류 ${ago(h.last_error_age_sec)} · 재연결 ${fmt(h.reconnects)}`;
     const pct=Math.min(Number(h.month_pct||0),100);
@@ -339,6 +339,8 @@ class UsageMeter:
             "ws_connect_errors":self.session["ws_connect_errors"],
             "ws_rate_limits":self.session["ws_rate_limits"],
             "rpc_per_min":round(attempts*60/elapsed,2),
+            "rpc_rps_cap":HELIUS_RPC_RPS,
+            "monthly_cap_est":round(HELIUS_RPC_RPS*86400*30),
             "avg_rpc_ms":round(avg,1),
             "last_rpc_age_sec":now()-self.last_rpc_at if self.last_rpc_at else None,
             "last_error_age_sec":now()-self.last_error_at if self.last_error_at else None,
