@@ -28,6 +28,7 @@ MIN_WQS=float(os.getenv("WBS_MIN_WQS","45"))
 MAX_DYNAMIC=int(os.getenv("WBS_MAX_DYNAMIC_SENSORS","100"))
 PROGRAM_SAMPLE=float(os.getenv("WBS_DISCOVERY_SAMPLE_SEC","12"))
 HEARTBEAT=int(os.getenv("WBS_HEARTBEAT_SEC","60"))
+HELIUS_MONTHLY_LIMIT=int(os.getenv("HELIUS_MONTHLY_CREDIT_LIMIT","1000000"))
 
 PROGRAMS={
     "pumpfun":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
@@ -51,10 +52,11 @@ DASHBOARD_HTML = r"""<!doctype html>
 h1{font-size:22px;margin:0}.live{display:flex;align-items:center;gap:8px;color:var(--green);font-weight:700}.dot{width:10px;height:10px;border-radius:99px;background:var(--green);box-shadow:0 0 16px var(--green)}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{background:rgba(21,28,51,.92);border:1px solid #25304e;border-radius:16px;padding:15px;box-shadow:0 8px 24px rgba(0,0,0,.18)}
 .label{font-size:12px;color:var(--muted);margin-bottom:7px}.big{font-size:25px;font-weight:800}.sub{font-size:12px;color:var(--muted);margin-top:5px}
-.two{display:grid;grid-template-columns:1.1fr .9fr;gap:12px;margin-top:12px}.section-title{font-size:14px;font-weight:800;margin-bottom:10px}
+.two{display:grid;grid-template-columns:1.1fr .9fr;gap:12px;margin-top:12px}.section-title{font-size:14px;font-weight:800;margin-bottom:10px}.section-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin:18px 2px 10px}.section-head h2{font-size:17px;margin:0}.section-head a{font-size:12px;color:var(--blue);text-decoration:none}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 7px;border-bottom:1px solid #26314d}th{color:var(--muted);font-weight:600}
 .badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:700}.ok{background:rgba(53,208,127,.13);color:var(--green)}.wait{background:rgba(255,209,102,.13);color:var(--yellow)}
 .timeline{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto}.event{background:var(--card2);border-radius:12px;padding:10px}.event .t{font-size:11px;color:var(--muted);margin-bottom:4px}.event b{font-size:13px}
+.meter{height:12px;background:#0a0f1e;border-radius:99px;overflow:hidden;margin:12px 0 8px}.meter>div{height:100%;width:0;background:linear-gradient(90deg,var(--green),var(--blue));transition:width .4s}.metric-list{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.metric{background:var(--card2);border-radius:11px;padding:10px}.metric b{display:block;font-size:18px;margin-top:3px}.full{margin-top:12px}.danger{color:var(--red)!important}.warn{color:var(--yellow)!important}.muted{color:var(--muted)}
 .rule{margin-top:12px;background:#10172a;border:1px solid #25304e;border-radius:14px;padding:12px;font-size:12px;color:#b8c4da}
 @media(max-width:850px){.grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}} @media(max-width:480px){.grid{grid-template-columns:1fr 1fr}.big{font-size:21px}.wrap{padding:12px}}
 </style>
@@ -62,7 +64,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 <body>
 <div class="wrap">
   <div class="top">
-    <div><h1>WBS LIVE PAPER</h1><div class="sub">Smart Behavior 실시간 탐색 · 모의매매</div></div>
+    <div><h1>WBS LIVE PAPER</h1><div class="sub">Smart Behavior 실시간 탐색 · 모의매매 · 운영 모니터링</div></div>
     <div class="live"><span class="dot"></span><span id="liveText">LIVE</span></div>
   </div>
 
@@ -77,6 +79,33 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
     <div class="card"><div class="label">엔진 상태</div><div class="big" style="font-size:18px" id="engine">-</div><div class="sub" id="updated">-</div></div>
   </div>
 
+  <div class="section-head"><h2>Helius 사용량</h2><a href="https://dashboard.helius.dev" target="_blank" rel="noopener">공식 사용량 확인 ↗</a></div>
+  <div class="grid">
+    <div class="card"><div class="label">이번 달 추정 Credits</div><div class="big" id="monthCredits">-</div><div class="sub" id="monthLimit">-</div></div>
+    <div class="card"><div class="label">오늘 추정 Credits</div><div class="big" id="todayCredits">-</div><div class="sub">앱이 직접 센 RPC 요청 기준</div></div>
+    <div class="card"><div class="label">RPC 처리 속도</div><div class="big" id="rpcRate">-</div><div class="sub" id="rpcLatency">-</div></div>
+    <div class="card"><div class="label">API 오류 / 429</div><div class="big" id="apiErrors">-</div><div class="sub" id="lastError">-</div></div>
+  </div>
+
+  <div class="two">
+    <div class="card">
+      <div class="section-title">월간 사용률 <span class="muted" id="usagePct">-</span></div>
+      <div class="meter"><div id="usageBar"></div></div>
+      <div class="sub" id="usageNotice">-</div>
+      <div class="sub" id="methodBreakdown">-</div>
+    </div>
+    <div class="card">
+      <div class="section-title">실시간 파이프라인</div>
+      <div class="metric-list">
+        <div class="metric"><span class="label">WS 이벤트</span><b id="wsEvents">-</b></div>
+        <div class="metric"><span class="label">가져온 트랜잭션</span><b id="txFetched">-</b></div>
+        <div class="metric"><span class="label">평가 지갑</span><b id="walletsScored">-</b></div>
+        <div class="metric"><span class="label">통과 / 탈락</span><b id="scoreResult">-</b></div>
+      </div>
+      <div class="sub" id="pipelineAge">-</div>
+    </div>
+  </div>
+
   <div class="two">
     <div class="card">
       <div class="section-title">Sensor Pool</div>
@@ -89,6 +118,14 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
       <div class="section-title">최근 이벤트</div>
       <div class="timeline" id="events"></div>
     </div>
+  </div>
+
+  <div class="card full">
+    <div class="section-title">최근 후보 평가</div>
+    <table>
+      <thead><tr><th>지갑</th><th>판정</th><th>WQS</th><th>표본</th><th>출처</th><th>평가 시각</th></tr></thead>
+      <tbody id="candidateRows"></tbody>
+    </table>
   </div>
 
   <div class="rule">
@@ -106,6 +143,13 @@ const ago=s=>{
   if(s<86400)return Math.floor(s/3600)+'시간 전';
   return Math.floor(s/86400)+'일 전';
 };
+const duration=s=>{
+  s=Math.max(0,Math.floor(Number(s||0)));
+  if(s<60)return s+'초';
+  if(s<3600)return Math.floor(s/60)+'분';
+  if(s<86400)return Math.floor(s/3600)+'시간 '+Math.floor((s%3600)/60)+'분';
+  return Math.floor(s/86400)+'일 '+Math.floor((s%86400)/3600)+'시간';
+};
 async function refresh(){
   try{
     const r=await fetch('/api/status',{cache:'no-store'});
@@ -118,7 +162,26 @@ async function refresh(){
     document.getElementById('open').textContent=d.open_positions;
     document.getElementById('trades').textContent=d.closed_trades;
     document.getElementById('engine').textContent=d.engine_alive?'정상 감시중':'확인 필요';
-    document.getElementById('updated').textContent='갱신 '+new Date(d.server_time*1000).toLocaleTimeString('ko-KR');
+    document.getElementById('updated').textContent=`가동 ${duration(d.uptime_sec)} · 갱신 ${new Date(d.server_time*1000).toLocaleTimeString('ko-KR')}`;
+    const h=d.helius||{};
+    document.getElementById('monthCredits').textContent=fmt(h.month_credits_est);
+    document.getElementById('todayCredits').textContent=fmt(h.today_credits_est);
+    document.getElementById('monthLimit').textContent=`한도 ${fmt(h.monthly_limit)} · ${Number(h.month_pct||0).toFixed(2)}%`;
+    document.getElementById('rpcRate').textContent=Number(h.rpc_per_min||0).toFixed(1)+'/분';
+    document.getElementById('rpcLatency').textContent=`평균 ${fmt(h.avg_rpc_ms)}ms · 총 ${fmt(h.session_rpc_attempts)}회`;
+    document.getElementById('apiErrors').textContent=`${fmt(h.session_rpc_errors)} / ${fmt(h.rate_limits)}`;
+    document.getElementById('lastError').textContent=h.last_error_age_sec==null?'오류 없음':'마지막 오류 '+ago(h.last_error_age_sec);
+    const pct=Math.min(Number(h.month_pct||0),100);
+    document.getElementById('usagePct').textContent=Number(h.month_pct||0).toFixed(3)+'%';
+    document.getElementById('usageBar').style.width=pct+'%';
+    document.getElementById('usageBar').style.background=pct>=80?'var(--red)':(pct>=50?'var(--yellow)':'linear-gradient(90deg,var(--green),var(--blue))');
+    document.getElementById('usageNotice').textContent=h.estimate_notice||'-';
+    document.getElementById('methodBreakdown').textContent='RPC '+Object.entries(h.methods||{}).map(([k,v])=>`${k} ${fmt(v)}`).join(' · ');
+    document.getElementById('wsEvents').textContent=fmt(h.ws_notifications);
+    document.getElementById('txFetched').textContent=fmt(h.transactions_fetched);
+    document.getElementById('walletsScored').textContent=fmt(h.wallets_scored);
+    document.getElementById('scoreResult').textContent=`${fmt(h.wallets_accepted)} / ${fmt(h.wallets_rejected)}`;
+    document.getElementById('pipelineAge').textContent=`마지막 온체인 이벤트 ${ago(h.last_ws_age_sec)} · 프로그램 절약 ${fmt(h.program_throttled)}건`;
     if(d.last_sensor){
       document.getElementById('lastSensor').textContent=d.last_sensor.wallet;
       document.getElementById('lastSensorScore').textContent='WQS '+d.last_sensor.wqs+' · '+d.last_sensor.source;
@@ -129,6 +192,9 @@ async function refresh(){
     document.getElementById('sensorRows').innerHTML=d.sensor_table.map(x=>
       `<tr><td>${x.wallet}</td><td><span class="badge ${x.kind==='Seed'?'wait':'ok'}">${x.kind}</span></td><td>${x.wqs??'-'}</td><td>${ago(x.activity_age_sec)}</td></tr>`
     ).join('');
+    document.getElementById('candidateRows').innerHTML=(d.candidate_table||[]).map(x=>
+      `<tr><td>${x.wallet}</td><td><span class="badge ${x.accepted?'ok':'wait'}">${x.accepted?'통과':'탈락'}</span></td><td>${x.wqs??'-'}</td><td>${x.details?.sample??'-'}건</td><td>${x.source}</td><td>${ago(x.age_sec)}</td></tr>`
+    ).join('') || '<tr><td colspan="6" class="muted">아직 평가가 완료된 후보가 없습니다.</td></tr>';
     document.getElementById('events').innerHTML=d.recent_events.map(x=>
       `<div class="event"><div class="t">${new Date(x.ts*1000).toLocaleTimeString('ko-KR')}</div><b>${x.type}</b> ${x.text}</div>`
     ).join('') || '<div class="sub">아직 표시할 이벤트가 없습니다.</div>';
@@ -162,17 +228,144 @@ def csv_rows(path):
     except Exception:
         return []
 
+class UsageMeter:
+    """App-side Helius usage estimate. The Helius billing dashboard is authoritative."""
+    def __init__(self,path):
+        self.path=path
+        self.started_at=now()
+        self.session=defaultdict(int)
+        self.latencies=deque(maxlen=200)
+        self.methods=defaultdict(int)
+        self.month=""
+        self.day=""
+        self.month_credits=0
+        self.day_credits=0
+        self.last_rpc_at=0
+        self.last_ws_at=0
+        self.last_error_at=0
+        self._load()
+        self._roll()
+
+    def _keys(self,t=None):
+        tm=time.gmtime(t or time.time())
+        return time.strftime("%Y-%m",tm),time.strftime("%Y-%m-%d",tm)
+
+    def _load(self):
+        if not self.path.exists():return
+        try:
+            d=json.loads(self.path.read_text())
+            self.month=str(d.get("month",""))
+            self.day=str(d.get("day",""))
+            self.month_credits=int(d.get("month_credits",0))
+            self.day_credits=int(d.get("day_credits",0))
+            self.methods.update({str(k):int(v) for k,v in d.get("methods",{}).items()})
+        except Exception:
+            pass
+
+    def _roll(self):
+        month,day=self._keys()
+        if month!=self.month:
+            self.month=month
+            self.month_credits=0
+            self.methods.clear()
+        if day!=self.day:
+            self.day=day
+            self.day_credits=0
+
+    def _credit_cost(self,method):
+        if method=="getProgramAccounts" or "Archive" in method:return 10
+        return 1
+
+    def rpc_attempt(self,method):
+        self._roll()
+        cost=self._credit_cost(method)
+        self.session["rpc_attempts"]+=1
+        self.month_credits+=cost
+        self.day_credits+=cost
+        self.methods[method]+=1
+        self.last_rpc_at=now()
+
+    def rpc_success(self,latency_ms):
+        self.session["rpc_success"]+=1
+        self.latencies.append(latency_ms)
+
+    def rpc_error(self,rate_limited=False):
+        self.session["rpc_errors"]+=1
+        if rate_limited:self.session["rate_limits"]+=1
+        self.last_error_at=now()
+
+    def inc(self,key,n=1):
+        self.session[key]+=n
+
+    def ws(self,kind):
+        self.session["ws_notifications"]+=1
+        self.session[f"ws_{kind}"]+=1
+        self.last_ws_at=now()
+
+    def save(self):
+        self._roll()
+        try:
+            self.path.write_text(json.dumps({
+                "month":self.month,"day":self.day,
+                "month_credits":self.month_credits,"day_credits":self.day_credits,
+                "methods":dict(self.methods),"updated_at":now()
+            },ensure_ascii=False,indent=2))
+        except Exception as e:
+            print("[USAGE_SAVE_ERR]",repr(e),flush=True)
+
+    def snapshot(self):
+        self._roll()
+        attempts=self.session["rpc_attempts"]
+        avg=sum(self.latencies)/len(self.latencies) if self.latencies else 0
+        pct=100*self.month_credits/max(HELIUS_MONTHLY_LIMIT,1)
+        elapsed=max(now()-self.started_at,1)
+        return {
+            "estimate_notice":"앱 자체 추정치 · 실제 청구량은 Helius 대시보드 기준",
+            "monthly_limit":HELIUS_MONTHLY_LIMIT,
+            "month_credits_est":self.month_credits,
+            "month_pct":round(pct,3),
+            "today_credits_est":self.day_credits,
+            "session_rpc_attempts":attempts,
+            "session_rpc_success":self.session["rpc_success"],
+            "session_rpc_errors":self.session["rpc_errors"],
+            "rate_limits":self.session["rate_limits"],
+            "rpc_per_min":round(attempts*60/elapsed,2),
+            "avg_rpc_ms":round(avg,1),
+            "last_rpc_age_sec":now()-self.last_rpc_at if self.last_rpc_at else None,
+            "last_error_age_sec":now()-self.last_error_at if self.last_error_at else None,
+            "methods":dict(sorted(self.methods.items(),key=lambda x:x[1],reverse=True)),
+            "ws_notifications":self.session["ws_notifications"],
+            "ws_wallet":self.session["ws_wallet"],
+            "ws_mint":self.session["ws_mint"],
+            "ws_program":self.session["ws_program"],
+            "last_ws_age_sec":now()-self.last_ws_at if self.last_ws_at else None,
+            "program_throttled":self.session["program_throttled"],
+            "transactions_fetched":self.session["transactions_fetched"],
+            "swap_events":self.session["swap_events"],
+            "wallets_scored":self.session["wallets_scored"],
+            "wallets_accepted":self.session["wallets_accepted"],
+            "wallets_rejected":self.session["wallets_rejected"],
+            "reconnects":self.session["reconnects"]
+        }
+
+USAGE=UsageMeter(STATE/"helius_usage.json")
+
 async def rpc(s,m,p,retries=5):
     body={"jsonrpc":"2.0","id":1,"method":m,"params":p}
     for i in range(retries):
+        USAGE.rpc_attempt(m)
+        started=time.perf_counter()
         try:
             async with s.post(RPC,json=body,timeout=30) as r:
                 if r.status==429:
+                    USAGE.rpc_error(rate_limited=True)
                     await asyncio.sleep(min(2**i,15)); continue
                 d=await r.json()
                 if "error" in d: raise RuntimeError(d["error"])
+                USAGE.rpc_success((time.perf_counter()-started)*1000)
                 return d.get("result")
         except Exception:
+            USAGE.rpc_error()
             if i==retries-1: raise
             await asyncio.sleep(min(2**i,15))
 
@@ -314,6 +507,8 @@ class Engine:
         try:
             score,det=await self.wqs(w)
             acc=score>=MIN_WQS
+            USAGE.inc("wallets_scored")
+            USAGE.inc("wallets_accepted" if acc else "wallets_rejected")
             self.dynamic[w]={
                 "wqs_proxy":score,"details":det,"source":source,
                 "ts":now(),"accepted":acc
@@ -333,6 +528,7 @@ class Engine:
 
     async def candidate(self,e,source):
         if e["side"]!="BUY" or e["wallet"] in self.sensor:return
+        USAGE.inc("candidate_buys")
         c=self.cand[e["wallet"]]
         c["buys"]+=1
         c["mints"].add(e["mint"])
@@ -340,6 +536,7 @@ class Engine:
             asyncio.create_task(self.score(e["wallet"],source))
 
     async def event(self,e,source,eligible=True):
+        USAGE.inc("swap_events")
         putcsv(EVENTS,{
             "ts":e["time"],"source":source,"wallet":e["wallet"],
             "mint":e["mint"],"side":e["side"],"sol_size":e["sol_size"],
@@ -451,12 +648,15 @@ class Engine:
         # Throttle BEFORE getTransaction to protect free Helius quota.
         if kind=="program":
             t=time.time()
-            if t-self.last_prog[target]<PROGRAM_SAMPLE:return
+            if t-self.last_prog[target]<PROGRAM_SAMPLE:
+                USAGE.inc("program_throttled")
+                return
             self.last_prog[target]=t
 
         self.seen.add(sig)
         tx=await gettx(self.s,sig)
         if not tx:return
+        USAGE.inc("transactions_fetched")
 
         self.last_loop_activity=now()
 
@@ -526,6 +726,20 @@ class Engine:
                 "source":v.get("source","")
             }
 
+        candidate_table=[]
+        for w,v in sorted(
+            self.dynamic.items(),
+            key=lambda x:int(x[1].get("ts",0)),reverse=True
+        )[:12]:
+            candidate_table.append({
+                "wallet":w[:10]+"…",
+                "wqs":v.get("wqs_proxy"),
+                "accepted":bool(v.get("accepted")),
+                "source":v.get("source",""),
+                "age_sec":t-int(v.get("ts",0)) if v.get("ts") else None,
+                "details":v.get("details",{})
+            })
+
         table=[]
         for w in sorted(self.sensor):
             v=self.dynamic.get(w)
@@ -551,13 +765,16 @@ class Engine:
             "open_positions":len(self.open),
             "closed_trades":self.closed_trades,
             "last_sensor":last_sensor,
+            "candidate_table":candidate_table,
             "sensor_table":table,
+            "helius":USAGE.snapshot(),
             "recent_events":list(self.recent)[:20]
         }
 
     async def heartbeat(self):
         while True:
             await asyncio.sleep(HEARTBEAT)
+            USAGE.save()
             d=self.status()
             print(
                 f"[HEARTBEAT] sensors={d['sensors']} dynamic={d['dynamic_count']} "
@@ -587,7 +804,7 @@ class Engine:
         return runner
 
     async def run(self):
-        print("WBS LIVE PAPER v0.2.1 + DASHBOARD",flush=True)
+        print("WBS LIVE PAPER v0.3.0 + OPS DASHBOARD",flush=True)
         print(
             "Frozen trade rule unchanged: "
             "2-wallet/5m/A HOLD/A adds<=2/B>=20%/10s no-sell",
@@ -637,6 +854,7 @@ class Engine:
                     target=self.sub.get(sid)
 
                     if sig and target:
+                        USAGE.ws(target[0])
                         self.last_loop_activity=now()
                         asyncio.create_task(self.handle(sig,target[0],target[1]))
         finally:
@@ -652,6 +870,8 @@ async def main():
             try:
                 await Engine(s).run()
             except Exception as e:
+                USAGE.inc("reconnects")
+                USAGE.save()
                 print("[RECONNECT]",repr(e),flush=True)
                 await asyncio.sleep(5)
 
