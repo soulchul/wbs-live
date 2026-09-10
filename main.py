@@ -29,6 +29,8 @@ MAX_DYNAMIC=int(os.getenv("WBS_MAX_DYNAMIC_SENSORS","100"))
 PROGRAM_SAMPLE=float(os.getenv("WBS_DISCOVERY_SAMPLE_SEC","12"))
 HEARTBEAT=int(os.getenv("WBS_HEARTBEAT_SEC","60"))
 HELIUS_MONTHLY_LIMIT=int(os.getenv("HELIUS_MONTHLY_CREDIT_LIMIT","1000000"))
+HELIUS_RPC_RPS=float(os.getenv("HELIUS_RPC_RPS","8"))
+MAX_INFLIGHT_HANDLES=int(os.getenv("WBS_MAX_INFLIGHT_HANDLES","24"))
 
 PROGRAMS={
     "pumpfun":"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
@@ -181,7 +183,7 @@ async function refresh(){
     document.getElementById('txFetched').textContent=fmt(h.transactions_fetched);
     document.getElementById('walletsScored').textContent=fmt(h.wallets_scored);
     document.getElementById('scoreResult').textContent=`${fmt(h.wallets_accepted)} / ${fmt(h.wallets_rejected)}`;
-    document.getElementById('pipelineAge').textContent=`마지막 온체인 이벤트 ${ago(h.last_ws_age_sec)} · 프로그램 절약 ${fmt(h.program_throttled)}건`;
+    document.getElementById('pipelineAge').textContent=`마지막 이벤트 ${ago(h.last_ws_age_sec)} · 처리중 ${fmt(d.inflight_handles)}/${fmt(d.max_inflight_handles)} · 샘플절약 ${fmt(h.program_throttled)} · 과부하드롭 ${fmt(h.overload_dropped)}`;
     if(d.last_sensor){
       document.getElementById('lastSensor').textContent=d.last_sensor.wallet;
       document.getElementById('lastSensorScore').textContent='WQS '+d.last_sensor.wqs+' · '+d.last_sensor.source;
@@ -340,6 +342,7 @@ class UsageMeter:
             "ws_program":self.session["ws_program"],
             "last_ws_age_sec":now()-self.last_ws_at if self.last_ws_at else None,
             "program_throttled":self.session["program_throttled"],
+            "overload_dropped":self.session["overload_dropped"],
             "transactions_fetched":self.session["transactions_fetched"],
             "swap_events":self.session["swap_events"],
             "wallets_scored":self.session["wallets_scored"],
@@ -350,9 +353,25 @@ class UsageMeter:
 
 USAGE=UsageMeter(STATE/"helius_usage.json")
 
+class RpcPacer:
+    def __init__(self,rps):
+        self.interval=1/max(rps,0.1)
+        self.lock=asyncio.Lock()
+        self.next_at=0.0
+
+    async def wait(self):
+        async with self.lock:
+            t=time.monotonic()
+            delay=self.next_at-t
+            if delay>0:await asyncio.sleep(delay)
+            self.next_at=max(self.next_at,time.monotonic())+self.interval
+
+RPC_PACER=RpcPacer(HELIUS_RPC_RPS)
+
 async def rpc(s,m,p,retries=5):
     body={"jsonrpc":"2.0","id":1,"method":m,"params":p}
     for i in range(retries):
+        await RPC_PACER.wait()
         USAGE.rpc_attempt(m)
         started=time.perf_counter()
         try:
@@ -435,6 +454,7 @@ class Engine:
         self.last_prog=defaultdict(float)
         self.cand=defaultdict(lambda:{"buys":0,"mints":set()})
         self.scoring=set()
+        self.inflight_handles=0
         self.recent=deque(maxlen=40)
         self.started_at=now()
         self.last_loop_activity=now()
@@ -679,6 +699,23 @@ class Engine:
                 for e in swaps(tx,w):
                     await self.candidate(e,f"program:{target}")
 
+    def schedule_handle(self,sig,kind,target):
+        if self.inflight_handles>=MAX_INFLIGHT_HANDLES:
+            USAGE.inc("overload_dropped")
+            return
+        self.inflight_handles+=1
+
+        async def wrapped():
+            try:
+                await self.handle(sig,kind,target)
+            except Exception as e:
+                USAGE.inc("handler_errors")
+                print("[HANDLE_ERR]",type(e).__name__,flush=True)
+            finally:
+                self.inflight_handles-=1
+
+        asyncio.create_task(wrapped())
+
     async def bootstrap(self):
         print("[BOOTSTRAP] checking seed activity",flush=True)
         for w in sorted(self.seed):
@@ -768,6 +805,8 @@ class Engine:
             "candidate_table":candidate_table,
             "sensor_table":table,
             "helius":USAGE.snapshot(),
+            "inflight_handles":self.inflight_handles,
+            "max_inflight_handles":MAX_INFLIGHT_HANDLES,
             "recent_events":list(self.recent)[:20]
         }
 
@@ -856,7 +895,7 @@ class Engine:
                     if sig and target:
                         USAGE.ws(target[0])
                         self.last_loop_activity=now()
-                        asyncio.create_task(self.handle(sig,target[0],target[1]))
+                        self.schedule_handle(sig,target[0],target[1])
         finally:
             self.ws_connected=False
             self.ws=None
@@ -866,14 +905,18 @@ async def main():
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=45)
     ) as s:
+        reconnect_delay=5
         while True:
             try:
                 await Engine(s).run()
+                reconnect_delay=5
             except Exception as e:
                 USAGE.inc("reconnects")
                 USAGE.save()
-                print("[RECONNECT]",repr(e),flush=True)
-                await asyncio.sleep(5)
+                status=getattr(e,"status",None)
+                print("[RECONNECT]",type(e).__name__,f"status={status}" if status else "",flush=True)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay=min(reconnect_delay*2,60)
 
 if __name__=="__main__":
     asyncio.run(main())
